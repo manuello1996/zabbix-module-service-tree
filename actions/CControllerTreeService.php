@@ -28,7 +28,7 @@ use Exception;
 abstract class CControllerTreeService extends CController {
 
 	// Filter idx prefix.
-	const FILTER_IDX = 'web.monitoring.treeservices';
+	const FILTER_IDX = 'web.services.treeservices';
 
 	// Filter fields default values.
 	const FILTER_FIELDS_DEFAULT = [
