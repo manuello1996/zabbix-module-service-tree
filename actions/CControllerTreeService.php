@@ -36,6 +36,7 @@ abstract class CControllerTreeService extends CController {
 		'status' => [],
 		'only_problems' => 0,
 		'show_path' => 0,
+		'only_with_sla' => 0,
 		'cols' => [
 			'sla',
 			'slo',
@@ -107,6 +108,33 @@ abstract class CControllerTreeService extends CController {
 			$missing_parent_ids = $this->collectMissingParentIds($services_by_id);
 		}
 
+		$sla_data_prefetch = [];
+		if (!empty($filter['only_with_sla'])) {
+			$sla_data_prefetch = $this->getSlaDataForServices(array_keys($services_by_id));
+			if ($sla_data_prefetch) {
+				$keep_ids = array_fill_keys(array_keys($sla_data_prefetch), true);
+				foreach ($services_by_id as $serviceid => $service) {
+					if (!array_key_exists($serviceid, $keep_ids)) {
+						continue;
+					}
+					$parent_id = $service['parents'] ? $service['parents'][0]['serviceid'] : '0';
+					while ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
+						$keep_ids[$parent_id] = true;
+						$parent = $services_by_id[$parent_id];
+						$parent_id = $parent['parents'] ? $parent['parents'][0]['serviceid'] : '0';
+					}
+				}
+				foreach ($services_by_id as $serviceid => $service) {
+					if (!array_key_exists($serviceid, $keep_ids)) {
+						unset($services_by_id[$serviceid]);
+					}
+				}
+			}
+			else {
+				$services_by_id = [];
+			}
+		}
+
 		if ($filter['only_problems']) {
 			foreach ($services_by_id as $serviceid => $service) {
 				if ((int) $service['status'] === -1) {
@@ -172,7 +200,12 @@ abstract class CControllerTreeService extends CController {
 		$load_sla = array_intersect($cols, ['sla', 'slo', 'sla_name', 'uptime', 'downtime', 'error_budget']);
 		$load_root_cause = in_array('root_cause', $cols, true);
 
-		$sla_data = $load_sla ? $this->getSlaDataForServices($visible_service_ids) : [];
+		if (!empty($filter['only_with_sla']) && $sla_data_prefetch) {
+			$sla_data = array_intersect_key($sla_data_prefetch, array_flip($visible_service_ids));
+		}
+		else {
+			$sla_data = $load_sla ? $this->getSlaDataForServices($visible_service_ids) : [];
+		}
 		foreach ($services_by_id as $serviceid => &$service) {
 			if (array_key_exists($serviceid, $sla_data)) {
 				$service['sla'] = $sla_data[$serviceid];
@@ -504,6 +537,9 @@ abstract class CControllerTreeService extends CController {
 		}
 		if (!array_key_exists('show_path', $input)) {
 			$input['show_path'] = 0;
+		}
+		if (!array_key_exists('only_with_sla', $input)) {
+			$input['only_with_sla'] = 0;
 		}
 
 		if (!array_key_exists('cols', $input) || !is_array($input['cols'])) {

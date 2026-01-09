@@ -96,6 +96,10 @@ if ($web_layout_mode == ZBX_LAYOUT_NORMAL) {
 		->setId('show_path')
 		->setChecked(!empty($data['filter']['show_path']));
 	$options_list->addItem(new CListItem([$show_path, new CLabel(_('Show breadcrumb path'), 'show_path')]));
+	$only_with_sla = (new CCheckBox('only_with_sla', '1'))
+		->setId('only_with_sla')
+		->setChecked(!empty($data['filter']['only_with_sla']));
+	$options_list->addItem(new CListItem([$only_with_sla, new CLabel(_('Only services with SLA'), 'only_with_sla')]));
 	$options_list->addClass('filter-options');
 	$left_list->addRow(new CLabel(_('Options')), $options_list);
 

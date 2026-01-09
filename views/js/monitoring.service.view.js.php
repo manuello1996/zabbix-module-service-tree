@@ -471,7 +471,8 @@
 			const status = this.getCookie('treeservice_filter_status');
 			const onlyProblems = this.getCookie('treeservice_filter_only_problems');
 			const showPath = this.getCookie('treeservice_filter_show_path');
-			if (!cols && !status && !onlyProblems && !showPath) {
+			const onlyWithSla = this.getCookie('treeservice_filter_only_with_sla');
+			if (!cols && !status && !onlyProblems && !showPath && !onlyWithSla) {
 				return false;
 			}
 			if (cols) {
@@ -486,6 +487,9 @@
 			if (showPath === '1') {
 				$filter.find('input[name="show_path"]').prop('checked', true);
 			}
+			if (onlyWithSla === '1') {
+				$filter.find('input[name="only_with_sla"]').prop('checked', true);
+			}
 			$filter.trigger('submit');
 			return true;
 		},
@@ -495,10 +499,12 @@
 			const statuses = this.getSelectedStatuses();
 			const onlyProblems = $('form[name="filter"] input[name="only_problems"]').is(':checked') ? '1' : '';
 			const showPath = $('form[name="filter"] input[name="show_path"]').is(':checked') ? '1' : '';
+			const onlyWithSla = $('form[name="filter"] input[name="only_with_sla"]').is(':checked') ? '1' : '';
 			this.setCookie('treeservice_filter_cols', cols.join(','), 30);
 			this.setCookie('treeservice_filter_status', statuses.join(','), 30);
 			this.setCookie('treeservice_filter_only_problems', onlyProblems, 30);
 			this.setCookie('treeservice_filter_show_path', showPath, 30);
+			this.setCookie('treeservice_filter_only_with_sla', onlyWithSla, 30);
 		},
 
 		getSelectedColumns() {
@@ -555,6 +561,7 @@
 			this.setCookie('treeservice_filter_status', '', -1);
 			this.setCookie('treeservice_filter_only_problems', '', -1);
 			this.setCookie('treeservice_filter_show_path', '', -1);
+			this.setCookie('treeservice_filter_only_with_sla', '', -1);
 		},
 
 		setCookie(name, value, days) {
