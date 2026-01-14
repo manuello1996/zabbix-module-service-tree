@@ -120,11 +120,17 @@ abstract class CControllerTreeService extends CController {
 					if (!array_key_exists($serviceid, $keep_ids)) {
 						continue;
 					}
-					$parent_id = $service['parents'] ? $service['parents'][0]['serviceid'] : '0';
-					while ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
-						$keep_ids[$parent_id] = true;
-						$parent = $services_by_id[$parent_id];
-						$parent_id = $parent['parents'] ? $parent['parents'][0]['serviceid'] : '0';
+					if (!empty($service['parents']) && is_array($service['parents'])) {
+						foreach ($service['parents'] as $parent) {
+							$parent_id = $parent['serviceid'];
+							while ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
+								$keep_ids[$parent_id] = true;
+								$parent_service = $services_by_id[$parent_id];
+								$parent_id = (!empty($parent_service['parents']) && is_array($parent_service['parents']))
+									? $parent_service['parents'][0]['serviceid']
+									: '0';
+							}
+						}
 					}
 				}
 				foreach ($services_by_id as $serviceid => $service) {
@@ -140,8 +146,14 @@ abstract class CControllerTreeService extends CController {
 
 		// Build tree relationships and per-node metadata.
 		foreach ($services_by_id as &$service) {
-			$service['parent_serviceid'] = $service['parents']
-				? $service['parents'][0]['serviceid']
+			$service['parent_serviceids'] = [];
+			if (!empty($service['parents']) && is_array($service['parents'])) {
+				foreach ($service['parents'] as $parent) {
+					$service['parent_serviceids'][] = $parent['serviceid'];
+				}
+			}
+			$service['parent_serviceid'] = !empty($service['parent_serviceids'])
+				? $service['parent_serviceids'][0]
 				: '0';
 			$service['children'] = [];
 			$service['is_collapsed'] = in_array($service['serviceid'], $expanded_services) ? false : true;
@@ -149,16 +161,28 @@ abstract class CControllerTreeService extends CController {
 		}
 		unset($service);
 
+		// Add each service as a child to ALL of its parents
 		foreach ($services_by_id as $serviceid => $service) {
-			$parent_id = $service['parent_serviceid'];
-			if ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
-				$services_by_id[$parent_id]['children'][] = $serviceid;
+			foreach ($service['parent_serviceids'] as $parent_id) {
+				if ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
+					if (!in_array($serviceid, $services_by_id[$parent_id]['children'])) {
+						$services_by_id[$parent_id]['children'][] = $serviceid;
+					}
+				}
 			}
 		}
 
+		// A service is a root service if it has no parents or none of its parents are in the tree
 		$root_services = [];
 		foreach ($services_by_id as $serviceid => $service) {
-			if ($service['parent_serviceid'] === '0' || !array_key_exists($service['parent_serviceid'], $services_by_id)) {
+			$has_parent_in_tree = false;
+			foreach ($service['parent_serviceids'] as $parent_id) {
+				if (array_key_exists($parent_id, $services_by_id)) {
+					$has_parent_in_tree = true;
+					break;
+				}
+			}
+			if (!$has_parent_in_tree) {
 				$root_services[] = $serviceid;
 			}
 		}
@@ -296,9 +320,11 @@ abstract class CControllerTreeService extends CController {
 			if (empty($service['parents']) || !is_array($service['parents'])) {
 				continue;
 			}
-			$parent_id = $service['parents'][0]['serviceid'];
-			if (!array_key_exists($parent_id, $services_by_id)) {
-				$missing[$parent_id] = true;
+			foreach ($service['parents'] as $parent) {
+				$parent_id = $parent['serviceid'];
+				if (!array_key_exists($parent_id, $services_by_id)) {
+					$missing[$parent_id] = true;
+				}
 			}
 		}
 

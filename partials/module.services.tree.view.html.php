@@ -97,7 +97,7 @@ $table->setHeader([
 // Render tree rows.
 foreach ($data['root_services'] as $serviceid) {
 	$rows = [];
-	addServiceRow($data, $rows, $serviceid, 0, false);
+	addServiceRow($data, $rows, $serviceid, 0, false, '0');
 	foreach ($rows as $row) {
 		$table->addRow($row);
 	}
@@ -131,7 +131,7 @@ $form->addItem((new CDiv([$expand_all, $collapse_all]))->addClass('tree-actions'
 echo $form;
 
 // Render a single service row and recurse into children.
-function addServiceRow(array $data, array &$rows, string $serviceid, int $level, bool $parent_collapsed): void {
+function addServiceRow(array $data, array &$rows, string $serviceid, int $level, bool $parent_collapsed, string $current_parent_id): void {
 	if (!array_key_exists($serviceid, $data['services'])) {
 		return;
 	}
@@ -311,11 +311,11 @@ function addServiceRow(array $data, array &$rows, string $serviceid, int $level,
 		$table_row->addClass(ZBX_STYLE_DISPLAY_NONE);
 	}
 
-	addParentServiceClass($data, $table_row, $service['parent_serviceid']);
+	addParentServiceClass($data, $table_row, $current_parent_id);
 	$rows[] = $table_row;
 
 	foreach ($service['children'] as $child_serviceid) {
-		addServiceRow($data, $rows, $child_serviceid, $level + 1, $parent_collapsed || $is_collapsed);
+		addServiceRow($data, $rows, $child_serviceid, $level + 1, $parent_collapsed || $is_collapsed, $serviceid);
 	}
 }
 
