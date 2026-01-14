@@ -9,7 +9,7 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 
 
 ## Requirements
-- Zabbix 7.0 (frontend module)
+- Zabbix 7.0+ (frontend module)
 - IT Services configured (Services, SLAs)
 
 ## Installation
