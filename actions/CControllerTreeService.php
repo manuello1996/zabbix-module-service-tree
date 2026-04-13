@@ -82,12 +82,14 @@ abstract class CControllerTreeService extends CController {
 		$services = $this->array_sort($services, 'name', $filter['sortorder']);
 
 		$services_by_id = [];
+		$expanded_services_set = array_fill_keys(array_map('strval', $expanded_services), true);
 		$status_filter = array_map('intval', $filter['status'] ?? []);
+		$status_filter_set = $status_filter ? array_fill_keys($status_filter, true) : [];
 		foreach ($services as $service) {
 			if ($filter['only_problems'] && (int) $service['status'] === -1) {
 				continue;
 			}
-			if ($status_filter && !in_array((int) $service['status'], $status_filter, true)) {
+			if ($status_filter_set && !array_key_exists((int) $service['status'], $status_filter_set)) {
 				continue;
 			}
 			$services_by_id[$service['serviceid']] = $service;
@@ -156,7 +158,7 @@ abstract class CControllerTreeService extends CController {
 				? $service['parent_serviceids'][0]
 				: '0';
 			$service['children'] = [];
-			$service['is_collapsed'] = in_array($service['serviceid'], $expanded_services) ? false : true;
+			$service['is_collapsed'] = !array_key_exists((string) $service['serviceid'], $expanded_services_set);
 			$service['root_cause'] = 'N/A';
 		}
 		unset($service);
@@ -165,12 +167,17 @@ abstract class CControllerTreeService extends CController {
 		foreach ($services_by_id as $serviceid => $service) {
 			foreach ($service['parent_serviceids'] as $parent_id) {
 				if ($parent_id !== '0' && array_key_exists($parent_id, $services_by_id)) {
-					if (!in_array($serviceid, $services_by_id[$parent_id]['children'])) {
-						$services_by_id[$parent_id]['children'][] = $serviceid;
-					}
+					$services_by_id[$parent_id]['children'][$serviceid] = true;
 				}
 			}
 		}
+
+		foreach ($services_by_id as &$service) {
+			if ($service['children']) {
+				$service['children'] = array_keys($service['children']);
+			}
+		}
+		unset($service);
 
 		// A service is a root service if it has no parents or none of its parents are in the tree
 		$root_services = [];
@@ -188,8 +195,21 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		foreach ($services_by_id as $serviceid => &$service) {
-			$service['path'] = $this->buildServicePath($services_by_id, $serviceid);
-			$service['path_names'] = $this->buildServicePathNames($services_by_id, $serviceid);
+			$path_ids = $this->buildServicePath($services_by_id, $serviceid);
+			$service['path'] = $path_ids;
+
+			$path_names = [];
+			foreach ($path_ids as $path_id) {
+				if (!array_key_exists($path_id, $services_by_id)) {
+					continue;
+				}
+
+				$path_name = $services_by_id[$path_id]['name'] ?? '';
+				if ($path_name !== '') {
+					$path_names[] = $path_name;
+				}
+			}
+			$service['path_names'] = $path_names;
 		}
 		unset($service);
 
@@ -335,9 +355,10 @@ abstract class CControllerTreeService extends CController {
 	private function collectVisibleServiceIds(array $services_by_id, array $root_services): array {
 		$visible = [];
 		$stack = $root_services;
+		$index = 0;
 
-		while ($stack) {
-			$serviceid = array_shift($stack);
+		while ($index < count($stack)) {
+			$serviceid = $stack[$index++];
 			if (!array_key_exists($serviceid, $services_by_id)) {
 				continue;
 			}
@@ -417,21 +438,6 @@ abstract class CControllerTreeService extends CController {
 		return $path;
 	}
 
-	// Build the list of ancestor service names for breadcrumb display.
-	private function buildServicePathNames(array $services_by_id, $serviceid): array {
-		$path_ids = $this->buildServicePath($services_by_id, $serviceid);
-		$names = [];
-
-		foreach ($path_ids as $path_id) {
-			if (!array_key_exists($path_id, $services_by_id)) {
-				continue;
-			}
-			$names[] = $services_by_id[$path_id]['name'] ?? '';
-		}
-
-		return array_values(array_filter($names, 'strlen'));
-	}
-
 	// Fetch SLA data for the given services and normalize fields.
 	private function getSlaDataForServices(array $service_ids): array {
 		if (!class_exists('API') || !method_exists('API', 'SLA')) {
@@ -451,12 +457,22 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		$slis_by_service = [];
-		$chunks = array_chunk($service_ids, 200);
+		$remaining_service_ids = array_fill_keys(array_map('strval', $service_ids), true);
 		foreach ($slas as $sla) {
+			if (!$remaining_service_ids) {
+				break;
+			}
+
 			if (!array_key_exists('slaid', $sla)) {
 				continue;
 			}
+
+			$chunks = array_chunk(array_keys($remaining_service_ids), 200);
 			foreach ($chunks as $service_chunk) {
+				if (!$remaining_service_ids) {
+					break;
+				}
+
 				$sli_response = API::SLA()->getSli([
 					'slaid' => $sla['slaid'],
 					'serviceids' => $service_chunk,
@@ -469,7 +485,8 @@ abstract class CControllerTreeService extends CController {
 				}
 
 				foreach ($sli_response['serviceids'] as $index => $serviceid) {
-					if (array_key_exists($serviceid, $slis_by_service)) {
+					$serviceid = (string) $serviceid;
+					if (!array_key_exists($serviceid, $remaining_service_ids)) {
 						continue;
 					}
 					$service_sli = $sli_response['sli'][$index] ?? [];
@@ -489,6 +506,8 @@ abstract class CControllerTreeService extends CController {
 						'slaid' => $sla['slaid'] ?? null,
 						'slo' => $sla['slo'] ?? null
 					];
+
+					unset($remaining_service_ids[$serviceid]);
 				}
 			}
 		}
@@ -506,6 +525,7 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		$by_service = [];
+		$tag_groups = [];
 		foreach ($services_by_id as $serviceid => $service) {
 			if (empty($service['problem_tags']) || !is_array($service['problem_tags'])) {
 				continue;
@@ -526,10 +546,31 @@ abstract class CControllerTreeService extends CController {
 				continue;
 			}
 
+			usort($tags, function($a, $b) {
+				$tag_compare = strcmp((string) ($a['tag'] ?? ''), (string) ($b['tag'] ?? ''));
+				if ($tag_compare !== 0) {
+					return $tag_compare;
+				}
+
+				return strcmp((string) ($a['value'] ?? ''), (string) ($b['value'] ?? ''));
+			});
+
+			$encoded_tags = json_encode($tags);
+			$signature = md5($encoded_tags !== false ? $encoded_tags : serialize($tags));
+			if (!array_key_exists($signature, $tag_groups)) {
+				$tag_groups[$signature] = [
+					'tags' => $tags,
+					'serviceids' => []
+				];
+			}
+			$tag_groups[$signature]['serviceids'][] = $serviceid;
+		}
+
+		foreach ($tag_groups as $tag_group) {
 			try {
 				$problems = API::Problem()->get([
 					'output' => ['eventid', 'name', 'severity', 'objectid', 'object'],
-					'tags' => $tags,
+					'tags' => $tag_group['tags'],
 					'evaltype' => TAG_EVAL_TYPE_AND_OR,
 					'sortfield' => 'eventid',
 					'sortorder' => 'DESC'
@@ -546,7 +587,9 @@ abstract class CControllerTreeService extends CController {
 				return (int)($b['severity'] ?? 0) <=> (int)($a['severity'] ?? 0);
 			});
 
-			$by_service[$serviceid] = $problems;
+			foreach ($tag_group['serviceids'] as $serviceid) {
+				$by_service[$serviceid] = $problems;
+			}
 		}
 
 		return $by_service;
