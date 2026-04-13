@@ -67,8 +67,6 @@ abstract class CControllerTreeService extends CController {
 		$service_params = [
 			'output' => ['serviceid', 'name', 'status'],
 			'selectParents' => ['serviceid'],
-			'selectChildren' => ['serviceid'],
-			'selectProblemTags' => ['tag', 'value'],
 			'sortfield' => 'name',
 			'sortorder' => $filter['sortorder']
 		];
@@ -79,7 +77,6 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		$services = API::Service()->get($service_params);
-		$services = $this->array_sort($services, 'name', $filter['sortorder']);
 
 		$services_by_id = [];
 		$expanded_services_set = array_fill_keys(array_map('strval', $expanded_services), true);
@@ -101,9 +98,7 @@ abstract class CControllerTreeService extends CController {
 			$parent_services = API::Service()->get([
 				'output' => ['serviceid', 'name', 'status'],
 				'serviceids' => $missing_parent_ids,
-				'selectParents' => ['serviceid'],
-				'selectChildren' => ['serviceid'],
-				'selectProblemTags' => ['tag', 'value']
+				'selectParents' => ['serviceid']
 			]);
 			foreach ($parent_services as $parent_service) {
 				$services_by_id[$parent_service['serviceid']] = $parent_service;
@@ -524,15 +519,21 @@ abstract class CControllerTreeService extends CController {
 			return [];
 		}
 
+		$problem_tags_by_service = $this->getProblemTagsForServices(array_keys($services_by_id));
+		if (!$problem_tags_by_service) {
+			return [];
+		}
+
 		$by_service = [];
 		$tag_groups = [];
 		foreach ($services_by_id as $serviceid => $service) {
-			if (empty($service['problem_tags']) || !is_array($service['problem_tags'])) {
+			$problem_tags = $problem_tags_by_service[$serviceid] ?? [];
+			if (!$problem_tags || !is_array($problem_tags)) {
 				continue;
 			}
 
 			$tags = [];
-			foreach ($service['problem_tags'] as $problem_tag) {
+			foreach ($problem_tags as $problem_tag) {
 				if (!array_key_exists('tag', $problem_tag)) {
 					continue;
 				}
@@ -589,6 +590,41 @@ abstract class CControllerTreeService extends CController {
 
 			foreach ($tag_group['serviceids'] as $serviceid) {
 				$by_service[$serviceid] = $problems;
+			}
+		}
+
+		return $by_service;
+	}
+
+	// Fetch problem tags only for the services that need root cause enrichment.
+	private function getProblemTagsForServices(array $service_ids): array {
+		$service_ids = array_values(array_unique(array_map('strval', $service_ids)));
+		if (!$service_ids) {
+			return [];
+		}
+
+		$by_service = [];
+		foreach (array_chunk($service_ids, 200) as $service_chunk) {
+			$services = API::Service()->get([
+				'output' => ['serviceid'],
+				'serviceids' => $service_chunk,
+				'selectProblemTags' => ['tag', 'value']
+			]);
+
+			if (!is_array($services) || !$services) {
+				continue;
+			}
+
+			foreach ($services as $service) {
+				$serviceid = (string) ($service['serviceid'] ?? '');
+				if ($serviceid === '') {
+					continue;
+				}
+
+				$problem_tags = $service['problem_tags'] ?? [];
+				if (is_array($problem_tags) && $problem_tags) {
+					$by_service[$serviceid] = $problem_tags;
+				}
 			}
 		}
 
