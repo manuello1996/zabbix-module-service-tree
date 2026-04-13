@@ -46,7 +46,7 @@
 			const url = new Curl('zabbix.php', false);
 			url.setArgument('action', 'treeservice.view.refresh');
 			this.refresh_simple_url = url.getUrl();
-			expanded_services = this.refresh_url.getArgument('expanded_services');
+			const expanded_services = this.refresh_url.getArgument('expanded_services');
 			if (expanded_services) {
 				this.refresh_simple_url += '&expanded_services=' + expanded_services;
 			}
@@ -65,7 +65,6 @@
 			this.initFilterControls();
 			this.initFilterToggle();
 			this.initExportCsv();
-
 			this.host_view_form = $('form[name=host_view]');
 			this.running = true;
 			this.refresh();
@@ -170,16 +169,7 @@
 		// Load the tree partial via AJAX.
 		refresh() {
 			this.setLoading();
-			const params = this.refresh_url.getArgumentsObject();
-			const exclude = ['action', 'filter_src', 'filter_show_counter', 'filter_custom_time', 'filter_name'];
-			const post_data = Object.keys(params)
-				.filter(key => !exclude.includes(key))
-				.reduce((post_data, key) => {
-					post_data[key] = (typeof params[key] === 'object')
-						? [...params[key]].filter(i => i)
-						: params[key];
-					return post_data;
-				}, {});
+			const post_data = this.getRefreshPostData();
 
 			this.deferred = $.ajax({
 				url: this.refresh_simple_url,
@@ -349,6 +339,33 @@
 				event.preventDefault();
 				$container.toggleClass('is-collapsed');
 			});
+		},
+
+		// Build POST payload for refresh based on current filters.
+		getRefreshPostData() {
+			const params = this.refresh_url.getArgumentsObject();
+			const exclude = ['action', 'filter_src', 'filter_show_counter', 'filter_custom_time', 'filter_name'];
+			const post_data = Object.keys(params)
+				.filter(key => !exclude.includes(key))
+				.reduce((data, key) => {
+					data[key] = (typeof params[key] === 'object')
+						? [...params[key]].filter(i => i)
+						: params[key];
+					return data;
+				}, {});
+
+			const expanded = this.getExpandedServicesFromRefreshUrl();
+			if (expanded) {
+				post_data.expanded_services = expanded;
+			}
+
+			return post_data;
+		},
+
+		// Extract expanded service IDs from refresh URL.
+		getExpandedServicesFromRefreshUrl() {
+			const match = this.refresh_simple_url.match(/[?&]expanded_services=([\d,]+)/);
+			return match ? match[1] : '';
 		},
 
 		// Bind CSV export button.
