@@ -114,6 +114,69 @@ $collapse_all = (new CButton('collapse_all', _('Collapse all')))
 	->addClass(ZBX_STYLE_BTN_ALT)
 	->addClass('js-collapse-all');
 $form->addItem((new CDiv([$expand_all, $collapse_all]))->addClass('tree-actions'));
+
+$graph_data = makeServiceGraphData($data);
+$graph_fit = (new CButton('graph_fit', _('Fit')))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-fit');
+$graph_left_right = (new CButton('graph_left_right', _('Left-right')))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-orientation')
+	->setAttribute('data-orientation', 'left-right');
+$graph_top_down = (new CButton('graph_top_down', _('Top-down')))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-orientation')
+	->setAttribute('data-orientation', 'top-down');
+$graph_problem_focus = (new CButton('graph_problem_focus', _('Problems only')))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-problems');
+$graph_zoom_in = (new CSimpleButton('+'))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-zoom-in')
+	->setAttribute('title', _('Zoom in'));
+$graph_zoom_out = (new CSimpleButton('-'))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-zoom-out')
+	->setAttribute('title', _('Zoom out'));
+$graph_reset = (new CButton('graph_reset', _('Reset')))
+	->addClass(ZBX_STYLE_BTN_ALT)
+	->addClass('js-service-graph-reset');
+$graph_panel = (new CDiv([
+	(new CDiv([
+		(new CLink([
+			(new CSpan())->addClass(ZBX_STYLE_ARROW_DOWN),
+			(new CSpan(_('Graph view')))->addClass('service-graph-title')
+		], '#'))
+			->addClass('service-graph-toggle')
+			->addClass('js-service-graph-toggle')
+			->setAttribute('aria-expanded', 'true'),
+		(new CDiv([
+			(new CTextBox('graph_search', ''))
+				->setAttribute('placeholder', _('Focus service'))
+				->addClass('js-service-graph-search')
+				->addClass('service-graph-search'),
+			$graph_problem_focus,
+			$graph_left_right,
+			$graph_top_down,
+			$graph_fit,
+			$graph_zoom_in,
+			$graph_zoom_out,
+			$graph_reset
+		]))
+			->addClass('service-graph-controls')
+	]))->addClass('service-graph-header'),
+	(new CDiv([
+		(new CTag('svg', true, ''))
+			->addClass('service-graph-svg')
+			->setAttribute('role', 'img')
+			->setAttribute('aria-label', _('Services tree graph')),
+		(new CDiv(_('No service selected')))->addClass('service-graph-details')
+	]))
+		->addClass('service-graph-canvas')
+		->setAttribute('data-graph', json_encode($graph_data))
+]))->addClass('service-graph-panel');
+$form->addItem($graph_panel);
+
 $form->addItem($table);
 // Paging footer with total count.
 $total_services = array_key_exists('services', $data) ? count($data['services']) : 0;

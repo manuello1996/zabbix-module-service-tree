@@ -6,6 +6,7 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 
 ## Screenshot
 ![Services tree](docs/services-tree.png)
+![Services graph](docs/services-graph.png)
 
 
 ## Requirements
@@ -26,6 +27,7 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 
 ## Features
 - Tree view of IT Services (strict tree, single parent).
+- Interactive SVG graph view with pan, zoom, fit-to-view, left-right/top-down layout, search focus, problem-only focus, service selection, and branch hide/show.
 - Search by service name (wildcards enabled).
 - Status filter (multiple severities).
 - Options:
@@ -53,10 +55,11 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 
 ## Root cause data
 - Root causes are derived from Service problem tags and correlated problems.
-- If the Root cause column is hidden, root cause queries are skipped.
+- Root causes are available in both the table column and the graph side panel. The graph side panel shows five at a time, and graph root-cause details are lazy-loaded when a service is selected.
 
 ## Performance notes
-- SLA and root cause data are loaded only for visible (expanded) rows.
+- SLA data is loaded only for visible rows unless SLA sorting or SLA-only filtering requires a broader lookup.
+- Root cause data is loaded only when the table column or a selected graph service needs it, and only for problem services.
 - Sorting by SLA columns loads SLA data for all rows to keep sorting accurate.
 
 ## Permissions

@@ -261,3 +261,82 @@ if (!function_exists('getServiceStatusMeta')) {
 	}
 }
 
+if (!function_exists('makeServiceGraphData')) {
+	function makeServiceGraphData(array $data): array {
+		$nodes = [];
+		$edges = [];
+		$root_causes_loaded = array_fill_keys(array_map('strval', $data['root_causes_loaded_serviceids'] ?? []), true);
+
+		foreach ($data['services'] as $serviceid => $service) {
+			$status_value = array_key_exists('status_calc', $service) ? $service['status_calc'] : $service['status'];
+			$status_meta = getServiceStatusMeta($status_value);
+			$service_url = (new CUrl('zabbix.php'))
+				->setArgument('action', 'service.list')
+				->setArgument('serviceid', $service['serviceid']);
+
+			if (!empty($service['path'])) {
+				$service_url->setArgument('path', $service['path']);
+			}
+
+			$root_causes = [];
+			foreach ($service['root_causes'] ?? [] as $problem) {
+				$problem_name = $problem['name'] ?? '';
+				if ($problem_name === '') {
+					continue;
+				}
+
+				$problem_url = null;
+				$problem_eventid = $problem['eventid'] ?? null;
+				$problem_triggerid = null;
+				if (array_key_exists('object', $problem)
+						&& defined('EVENT_OBJECT_TRIGGER')
+						&& $problem['object'] == EVENT_OBJECT_TRIGGER) {
+					$problem_triggerid = $problem['objectid'] ?? null;
+				}
+
+				if ($problem_eventid !== null && $problem_triggerid !== null) {
+					$problem_url = (new CUrl('tr_events.php'))
+						->setArgument('triggerid', $problem_triggerid)
+						->setArgument('eventid', $problem_eventid)
+						->getUrl();
+				}
+
+				$root_causes[] = [
+					'name' => $problem_name,
+					'severity' => (int)($problem['severity'] ?? 0),
+					'url' => $problem_url
+				];
+			}
+
+			$nodes[] = [
+				'id' => (string) $serviceid,
+				'name' => $service['name'],
+				'status' => (int) $status_value,
+				'status_text' => $status_meta['text'],
+				'status_class' => $status_meta['class'],
+				'sla' => $service['sla']['sli'] !== null ? number_format((float) $service['sla']['sli'], 2, '.', '').'%' : '-',
+				'slo' => $service['sla']['slo'] !== null ? $service['sla']['slo'].'%' : '-',
+				'is_collapsed' => (bool)($service['is_collapsed'] ?? false),
+				'children' => array_values(array_map('strval', $service['children'] ?? [])),
+				'parents' => array_values(array_map('strval', $service['parent_serviceids'] ?? [])),
+				'root_causes' => $root_causes,
+				'root_causes_loaded' => array_key_exists((string) $serviceid, $root_causes_loaded),
+				'url' => $service_url->getUrl()
+			];
+
+			foreach ($service['children'] ?? [] as $child_serviceid) {
+				$edge_key = $serviceid.'-'.$child_serviceid;
+				$edges[$edge_key] = [
+					'from' => (string) $serviceid,
+					'to' => (string) $child_serviceid
+				];
+			}
+		}
+
+		return [
+			'root_services' => array_values(array_map('strval', $data['root_services'])),
+			'nodes' => $nodes,
+			'edges' => array_values($edges)
+		];
+	}
+}

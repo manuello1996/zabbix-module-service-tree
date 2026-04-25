@@ -15,6 +15,11 @@
             "class": "CControllerTreeServiceViewRefresh",
             "view": "module.services.treeservice.view.refresh",
             "layout": "layout.json"
+        },
+        "treeservice.rootcauses": {
+            "class": "CControllerTreeServiceRootCauses",
+            "view": "module.services.treeservice.rootcauses",
+            "layout": "layout.json"
         }
     }
 }

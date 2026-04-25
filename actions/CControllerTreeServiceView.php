@@ -43,6 +43,8 @@ class CControllerTreeServiceView extends CControllerTreeService {
 			'only_problems' =>			'in 0,1',
 			'show_path' =>			'in 0,1',
 			'only_with_sla' =>			'in 0,1',
+			'graph_root_causes' =>			'in 0,1',
+			'debug' =>			'in 0,1',
 			'sort' =>			'in name,sla,slo,sla_name,uptime,downtime,error_budget',
 			'sortorder' =>			'in '.ZBX_SORT_UP.','.ZBX_SORT_DOWN,
 			'page' =>			'ge 1',

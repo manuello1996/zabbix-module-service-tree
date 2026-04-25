@@ -28,4 +28,8 @@ if (($messages = getMessages()) !== null) {
 	$output['messages'] = $messages->toString();
 }
 
+if (array_key_exists('api_debug', $data)) {
+	$output['api_debug'] = $data['api_debug'];
+}
+
 echo json_encode($output);

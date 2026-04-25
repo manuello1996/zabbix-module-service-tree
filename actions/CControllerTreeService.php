@@ -30,6 +30,9 @@ abstract class CControllerTreeService extends CController {
 	// Filter idx prefix.
 	const FILTER_IDX = 'web.services.treeservices';
 
+	private static $sla_definitions = null;
+	protected $api_stats = [];
+
 	// Filter fields default values.
 	const FILTER_FIELDS_DEFAULT = [
 		'name' => '',
@@ -37,6 +40,8 @@ abstract class CControllerTreeService extends CController {
 		'only_problems' => 0,
 		'show_path' => 0,
 		'only_with_sla' => 0,
+		'graph_root_causes' => 0,
+		'debug' => 0,
 		'cols' => [
 			'sla',
 			'slo',
@@ -63,6 +68,17 @@ abstract class CControllerTreeService extends CController {
 	 * @return array
 	 */
 	protected function getData(array $filter, array $expanded_services): array {
+		$this->api_stats = [
+			'services' => 0,
+			'visible_services' => 0,
+			'parent_fetch_calls' => 0,
+			'sla_services' => 0,
+			'sla_getsli_calls' => 0,
+			'root_cause_services' => 0,
+			'problem_tag_calls' => 0,
+			'problem_group_calls' => 0
+		];
+
 		// Build and enrich the service tree based on filter and expansion state.
 		$service_params = [
 			'output' => ['serviceid', 'name', 'status'],
@@ -77,6 +93,7 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		$services = API::Service()->get($service_params);
+		$this->api_stats['services'] = is_array($services) ? count($services) : 0;
 
 		$services_by_id = [];
 		$expanded_services_set = array_fill_keys(array_map('strval', $expanded_services), true);
@@ -93,18 +110,36 @@ abstract class CControllerTreeService extends CController {
 		}
 
 		// Ensure tree integrity by fetching missing parents for filtered services.
-		$missing_parent_ids = $this->collectMissingParentIds($services_by_id);
+		$requested_parent_ids = [];
+		$missing_parent_ids = $this->collectMissingParentIds($services_by_id, $requested_parent_ids);
 		while ($missing_parent_ids) {
+			foreach ($missing_parent_ids as $parent_id) {
+				$requested_parent_ids[$parent_id] = true;
+			}
+
 			$parent_services = API::Service()->get([
 				'output' => ['serviceid', 'name', 'status'],
 				'serviceids' => $missing_parent_ids,
 				'selectParents' => ['serviceid']
 			]);
-			foreach ($parent_services as $parent_service) {
-				$services_by_id[$parent_service['serviceid']] = $parent_service;
+			$this->api_stats['parent_fetch_calls']++;
+			if (!is_array($parent_services) || !$parent_services) {
+				break;
 			}
 
-			$missing_parent_ids = $this->collectMissingParentIds($services_by_id);
+			$added_parent = false;
+			foreach ($parent_services as $parent_service) {
+				if (array_key_exists($parent_service['serviceid'], $services_by_id)) {
+					continue;
+				}
+				$services_by_id[$parent_service['serviceid']] = $parent_service;
+				$added_parent = true;
+			}
+			if (!$added_parent) {
+				break;
+			}
+
+			$missing_parent_ids = $this->collectMissingParentIds($services_by_id, $requested_parent_ids);
 		}
 
 		// When SLA-only is enabled, keep SLA services and their ancestors.
@@ -208,8 +243,9 @@ abstract class CControllerTreeService extends CController {
 		}
 		unset($service);
 
-		// Limit expensive data (SLA/root cause) to visible rows unless sorting by SLA.
+		// Limit expensive data to visible rows unless sorting by SLA.
 		$visible_service_ids = $this->collectVisibleServiceIds($services_by_id, $root_services);
+		$this->api_stats['visible_services'] = count($visible_service_ids);
 		$cols = $filter['cols'] ?? [];
 		if (in_array($filter['sort'] ?? 'name', ['sla', 'slo', 'sla_name', 'uptime', 'downtime', 'error_budget'], true)) {
 			$visible_service_ids = array_keys($services_by_id);
@@ -261,7 +297,21 @@ abstract class CControllerTreeService extends CController {
 			return $this->compareServices($services_by_id, $a, $b, $filter);
 		});
 
-		$root_causes = $load_root_cause ? $this->getRootCauses($services_by_id, $visible_service_ids) : [];
+		$root_cause_service_ids = [];
+		foreach ($visible_service_ids as $serviceid) {
+			if (!array_key_exists($serviceid, $services_by_id)) {
+				continue;
+			}
+			$service = $services_by_id[$serviceid];
+			$status_value = (int)($service['status_calc'] ?? $service['status']);
+			if ($status_value !== -1) {
+				$root_cause_service_ids[] = $serviceid;
+			}
+		}
+		$root_causes = ($load_root_cause && $root_cause_service_ids)
+			? $this->getRootCauses($services_by_id, $root_cause_service_ids)
+			: [];
+		$this->api_stats['root_cause_services'] = count($root_cause_service_ids);
 		foreach ($services_by_id as $serviceid => &$service) {
 			$service['root_causes'] = $root_causes[$serviceid] ?? [];
 		}
@@ -283,11 +333,18 @@ abstract class CControllerTreeService extends CController {
 			}
 		}
 
-		return [
+		$result = [
 			'root_services' => $root_services,
 			'services' => $services_by_id,
-			'status_summary' => $status_summary
+			'status_summary' => $status_summary,
+			'root_causes_loaded_serviceids' => $load_root_cause ? array_values($root_cause_service_ids) : []
 		];
+
+		if (!empty($filter['debug'])) {
+			$result['api_debug'] = $this->api_stats;
+		}
+
+		return $result;
 	}
 
 	// Sorts a list of arrays by a given key.
@@ -329,7 +386,7 @@ abstract class CControllerTreeService extends CController {
 	}
 
 	// Returns parent service IDs missing from the current map.
-	private function collectMissingParentIds(array $services_by_id): array {
+	private function collectMissingParentIds(array $services_by_id, array $already_requested = []): array {
 		$missing = [];
 		foreach ($services_by_id as $service) {
 			if (empty($service['parents']) || !is_array($service['parents'])) {
@@ -337,7 +394,7 @@ abstract class CControllerTreeService extends CController {
 			}
 			foreach ($service['parents'] as $parent) {
 				$parent_id = $parent['serviceid'];
-				if (!array_key_exists($parent_id, $services_by_id)) {
+				if (!array_key_exists($parent_id, $services_by_id) && !array_key_exists($parent_id, $already_requested)) {
 					$missing[$parent_id] = true;
 				}
 			}
@@ -443,10 +500,9 @@ abstract class CControllerTreeService extends CController {
 		if (!$service_ids) {
 			return [];
 		}
+		$this->api_stats['sla_services'] += count($service_ids);
 
-		$slas = API::SLA()->get([
-			'output' => ['slaid', 'name', 'slo']
-		]);
+		$slas = $this->getSlaDefinitions();
 		if (!is_array($slas) || !$slas) {
 			return [];
 		}
@@ -462,7 +518,7 @@ abstract class CControllerTreeService extends CController {
 				continue;
 			}
 
-			$chunks = array_chunk(array_keys($remaining_service_ids), 200);
+			$chunks = array_chunk(array_keys($remaining_service_ids), 1000);
 			foreach ($chunks as $service_chunk) {
 				if (!$remaining_service_ids) {
 					break;
@@ -474,6 +530,7 @@ abstract class CControllerTreeService extends CController {
 					'periods' => 1,
 					'period_from' => time()
 				]);
+				$this->api_stats['sla_getsli_calls']++;
 
 				if (empty($sli_response) || !isset($sli_response['serviceids'], $sli_response['sli'])) {
 					continue;
@@ -510,8 +567,22 @@ abstract class CControllerTreeService extends CController {
 		return $slis_by_service;
 	}
 
+	private function getSlaDefinitions(): array {
+		if (self::$sla_definitions !== null) {
+			return self::$sla_definitions;
+		}
+
+		$slas = API::SLA()->get([
+			'output' => ['slaid', 'name', 'slo']
+		]);
+
+		self::$sla_definitions = is_array($slas) ? $slas : [];
+
+		return self::$sla_definitions;
+	}
+
 	// Resolve root cause problems based on service problem tags.
-	private function getRootCauses(array $services_by_id, array $service_ids = []): array {
+	protected function getRootCauses(array $services_by_id, array $service_ids = []): array {
 		if ($service_ids) {
 			$services_by_id = array_intersect_key($services_by_id, array_flip($service_ids));
 		}
@@ -576,6 +647,7 @@ abstract class CControllerTreeService extends CController {
 					'sortfield' => 'eventid',
 					'sortorder' => 'DESC'
 				]);
+				$this->api_stats['problem_group_calls']++;
 			} catch (Exception $e) {
 				continue;
 			}
@@ -610,6 +682,7 @@ abstract class CControllerTreeService extends CController {
 				'serviceids' => $service_chunk,
 				'selectProblemTags' => ['tag', 'value']
 			]);
+			$this->api_stats['problem_tag_calls']++;
 
 			if (!is_array($services) || !$services) {
 				continue;
@@ -697,6 +770,12 @@ abstract class CControllerTreeService extends CController {
 		}
 		if (!array_key_exists('only_with_sla', $input)) {
 			$input['only_with_sla'] = 0;
+		}
+		if (!array_key_exists('graph_root_causes', $input)) {
+			$input['graph_root_causes'] = 0;
+		}
+		if (!array_key_exists('debug', $input)) {
+			$input['debug'] = 0;
 		}
 		if (!array_key_exists('cols', $input) || !is_array($input['cols'])) {
 			$input['cols'] = self::FILTER_FIELDS_DEFAULT['cols'];
