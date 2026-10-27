@@ -21,12 +21,13 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 ## Usage 
 - Use the filter panel to search, filter by severity, and toggle columns.
 - Expand/collapse branches with the arrows or the Expand all / Collapse all buttons.
+- The graph starts collapsed on each page visit. Open Graph view to fetch and render it.
 - Click service names to open the standard Service view.
 - Click SLA names to open the SLA report.
 - Export the current table view with Export CSV.
 
 ## Features
-- Tree view of IT Services (strict tree, single parent).
+- Tree view of IT Services. Shared descendants appear once in the table; the graph retains links to their visible parents.
 - Interactive SVG graph view with pan, zoom, fit-to-view, left-right/top-down layout, search focus, problem-only focus, service selection, and branch hide/show.
 - Search by service name (wildcards enabled).
 - Status filter (multiple severities).
@@ -51,16 +52,35 @@ Service Tree adds a Services tree view to Zabbix (Services -> Services tree). It
 - SLA metrics are fetched from the SLA configuration (SLA + Services).
 - SLA percentage is shown with two decimals.
 - Downtime and Error Budget use the same formatting as the SLA report.
-- If SLA columns are hidden, SLA API calls are skipped to speed up loading.
+- SLA calculations are skipped when metric columns and the graph are hidden, unless a metric is the active sort field.
+- SLO and SLA Name use configuration lookups without calculating SLI. The SLA-only filter also uses configuration membership.
+- Enabled SLAs are considered in name/ID order; if a service belongs to several, the first is displayed.
 
 ## Root cause data
-- Root causes are derived from Service problem tags and correlated problems.
+- Root causes use Zabbix's native service problem events, including problems propagated from descendants. Event links respect event permissions.
 - Root causes are available in both the table column and the graph side panel. The graph side panel shows five at a time, and graph root-cause details are lazy-loaded when a service is selected.
 
 ## Performance notes
-- SLA data is loaded only for visible rows unless SLA sorting or SLA-only filtering requires a broader lookup.
+- The initial page renders the filter and an empty container; one AJAX request loads the table.
+- Collapsed descendants do not create hidden table rows or receive SLA/root-cause enrichment.
+- SLA data is loaded only for displayed rows, including when sorting. Hidden descendants are sorted when expanded.
 - Root cause data is loaded only when the table column or a selected graph service needs it, and only for problem services.
-- Sorting by SLA columns loads SLA data for all rows to keep sorting accurate.
+- The graph receives only displayed services when opened. Closing it clears SVG nodes and releases listeners and pending root-cause requests. Refreshes do not render a closed graph.
+- Graph focus/search works within displayed branches; use the page filter to find services across the full hierarchy. Graph rendering is capped at 500 nodes, including focused views.
+- IDs, statuses and parent IDs are still scanned to support global filters, status totals, ancestor retention and Expand all. Names are fetched only for displayed services and breadcrumb ancestors. The SLA-only filter checks membership across matching services, without calculating hidden SLI.
+- Expand all explicitly requests all branches and can still be expensive on large installations.
+- Add `debug=1` to the page URL to include API counters in refresh JSON responses.
+
+See [implementation review](docs/implementation-review.md) for findings, validation and remaining limits.
+
+## Regression checks
+
+```sh
+php tests/backend.php
+node tests/frontend.cjs
+# Optional integration with an installed Zabbix frontend (no database required):
+php tests/render.php /usr/share/zabbix
+```
 
 ## Permissions
 The module uses standard Zabbix permissions for Services and Problems.

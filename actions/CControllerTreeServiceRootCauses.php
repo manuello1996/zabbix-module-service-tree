@@ -35,13 +35,13 @@ class CControllerTreeServiceRootCauses extends CControllerTreeService {
 	}
 
 	protected function checkPermissions(): bool {
-		return $this->checkAccess(CRoleHelper::UI_MONITORING_HOSTS);
+		return $this->checkAccess(CRoleHelper::UI_SERVICES_SERVICES);
 	}
 
 	protected function doAction(): void {
 		$this->api_stats = [
-			'problem_tag_calls' => 0,
-			'problem_group_calls' => 0
+			'root_cause_calls' => 0,
+			'event_calls' => 0
 		];
 
 		$serviceid = (string) $this->getInput('serviceid');

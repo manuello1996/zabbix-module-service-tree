@@ -37,9 +37,13 @@ class CControllerTreeServiceViewRefresh extends CControllerTreeServiceView {
 		$expanded_services = explode(',', $this->getInput('expanded_services', '0'));
 		$prepared_data = $this->getData($filter, $expanded_services);
 
-		$view_url = (new CUrl())
-			->setArgument('action', 'treeservice.view')
-			->removeArgument('page');
+		$view_url = (new CUrl('zabbix.php'))->setArgument('action', 'treeservice.view');
+		foreach ($filter as $key => $value) {
+			if (!in_array($key, ['page', 'graph_open', 'graph_root_causes'], true)) {
+				$view_url->setArgument($key, $key === 'cols' && !$value ? [''] : $value);
+			}
+		}
+		$view_url->setArgument('expanded_services', implode(',', $expanded_services));
 
 		$data = [
 			'last_refreshed' => time(),

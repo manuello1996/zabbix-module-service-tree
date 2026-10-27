@@ -44,6 +44,7 @@ class CControllerTreeServiceView extends CControllerTreeService {
 			'show_path' =>			'in 0,1',
 			'only_with_sla' =>			'in 0,1',
 			'graph_root_causes' =>			'in 0,1',
+			'graph_open' =>			'in 0,1',
 			'debug' =>			'in 0,1',
 			'sort' =>			'in name,sla,slo,sla_name,uptime,downtime,error_budget',
 			'sortorder' =>			'in '.ZBX_SORT_UP.','.ZBX_SORT_DOWN,
@@ -62,7 +63,7 @@ class CControllerTreeServiceView extends CControllerTreeService {
 
 	// Reuse standard permissions for Services access.
 	protected function checkPermissions(): bool {
-		return $this->checkAccess(CRoleHelper::UI_MONITORING_HOSTS);
+		return $this->checkAccess(CRoleHelper::UI_SERVICES_SERVICES);
 	}
 
 	// Build initial page data and refresh URL.
@@ -74,9 +75,7 @@ class CControllerTreeServiceView extends CControllerTreeService {
 		$refresh_curl = new CUrl('zabbix.php');
 		$filter['action'] = 'treeservice.view.refresh';
 		array_map([$refresh_curl, 'setArgument'], array_keys($filter), $filter);
-		$expanded_services = [];
 		if ($this->hasInput('expanded_services')) {
-			$expanded_services = explode(",", $this->getInput('expanded_services'));
 			$refresh_curl->setArgument('expanded_services', $this->getInput('expanded_services'));
 		}
 
@@ -86,7 +85,7 @@ class CControllerTreeServiceView extends CControllerTreeService {
 			'refresh_interval' => 3600000,
 			'filter' => $filter,
 			'tabfilter_options' => null
-		] + $this->getData($filter, $expanded_services);
+		];
 
 		$response = new CControllerResponseData($data);
 		$response->setTitle(_('Services tree'));

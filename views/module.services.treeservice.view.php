@@ -84,7 +84,10 @@ $filter_form = (new CForm())
 		->setName('filter')
 		->setMethod('get')
 		->setAttribute('action', 'zabbix.php')
-		->addItem(new CVar('action', 'treeservice.view'));
+		->addItem(new CVar('action', 'treeservice.view'))
+		->addItem(new CVar('cols[]', ''))
+		->addItem(new CVar('sort', $data['filter']['sort']))
+		->addItem(new CVar('sortorder', $data['filter']['sortorder']));
 
 	$left_list = new CFormList('treeserviceFilterLeft');
 	$left_list->addRow(
@@ -177,6 +180,7 @@ $this->addCssFile('modules/zabbix-module-service-tree/views/css/treeservice.css'
 (new CScriptTag('
 	view.init('.json_encode([
 		'filter_options' => $data['filter_options'],
+		'filter_values' => $data['filter'],
 		'refresh_url' => $data['refresh_url'],
 		'refresh_interval' => $data['refresh_interval']
 	]).');

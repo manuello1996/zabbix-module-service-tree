@@ -21,7 +21,9 @@
 
 // Render only the tree partial for AJAX refresh.
 $output = [
-	'body' => (new CPartial('module.services.tree.view.html', $data))->getOutput()
+	'body' => (new CPartial('module.services.tree.view.html', $data))->getOutput(),
+	'expandable_serviceids' => $data['expandable_serviceids'],
+	'last_refreshed' => zbx_date2str(DATE_TIME_FORMAT, $data['last_refreshed'])
 ];
 
 if (($messages = getMessages()) !== null) {

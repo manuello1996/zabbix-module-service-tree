@@ -38,32 +38,29 @@
 		service_graph: null,
 		graph_state: null,
 		graph_search_timer: null,
-		root_cause_cache: {},
+		graph_open: false,
+		expanded_services: [],
+		expandable_serviceids: [],
+		filter_refresh_timer: null,
 		_refresh_message_box: null,
 		_popup_message_box: null,
 
-		init({filter_options, refresh_url, refresh_interval}) {
+		init({filter_options, refresh_url, refresh_interval, filter_values}) {
 			// Initialize refresh URL, filters, and auto-refresh.
-			this.refresh_url = new Curl(refresh_url, false);
+			// PHP CUrl uses indexed arrays; JS Curl cannot parse those as arrays.
+			// Pass normalized filters directly so column changes replace the full selection.
+			this.refresh_url = new Curl('zabbix.php', false);
+			Object.entries(filter_values).forEach(([key, value]) => this.refresh_url.setArgument(key, value));
 			this.refresh_interval = refresh_interval;
 
 			const url = new Curl('zabbix.php', false);
 			url.setArgument('action', 'treeservice.view.refresh');
 			this.refresh_simple_url = url.getUrl();
-			const expanded_services = this.refresh_url.getArgument('expanded_services');
-			if (expanded_services) {
-				this.refresh_simple_url += '&expanded_services=' + expanded_services;
-			}
-			else {
-				const saved = this.getCookie('treeservice_expanded');
-				if (saved) {
-					this.refresh_simple_url += '&expanded_services=' + saved;
-				}
-			}
-
-			if (this.restoreFilterFromCookie()) {
-				return;
-			}
+			const args = new Curl(refresh_url, false).getArgumentsObject();
+			const expanded = Object.prototype.hasOwnProperty.call(args, 'expanded_services')
+				? args.expanded_services : this.getCookie('treeservice_expanded');
+			this.expanded_services = String(expanded || '').split(',').filter(id => /^\d+$/.test(id));
+			this.restoreFilterFromCookie();
 
 			this.initTabFilter(filter_options);
 			this.initFilterControls();
@@ -172,6 +169,9 @@
 
 		// Load the tree partial via AJAX.
 		refresh() {
+			this.unscheduleRefresh();
+			clearTimeout(this.filter_refresh_timer);
+			this.filter_refresh_timer = null;
 			this.setLoading();
 			const post_data = this.getRefreshPostData();
 
@@ -193,28 +193,48 @@
 		},
 
 		bindDataEvents(deferred) {
-			deferred
-				.done((response) => {
-					this.onDataDone.call(this, response);
-				})
-				.fail((jqXHR) => {
-					this.onDataFail.call(this, jqXHR);
-				})
-				.always(this.onDataAlways.bind(this));
-
+			deferred.done((response) => {
+				if (this.deferred === deferred) {
+					this.onDataDone(response);
+				}
+			}).fail((jqXHR) => {
+				if (this.deferred === deferred) {
+					this.onDataFail(jqXHR);
+				}
+			}).always(() => {
+				if (this.deferred === deferred) {
+					this.onDataAlways();
+				}
+			});
 			return deferred;
 		},
 
 		onDataDone(response) {
+			if (typeof response.body !== 'string') {
+				this.clearLoading();
+				if (response.messages) {
+					this._addRefreshMessage(response.messages);
+				}
+				return;
+			}
 			this.clearLoading();
 			this._removeRefreshMessage();
-			if (this.service_graph) {
-				this.graph_state = this.service_graph.getState();
-			}
+			this.destroyServiceGraph();
 			this.host_view_form.replaceWith(response.body);
 			this.host_view_form = $('form[name=host_view]');
+			this.expandable_serviceids = response.expandable_serviceids || [];
 			this.applyColumnVisibilityFromForm();
-			this.initServiceGraph();
+			this.initTreeEvents();
+			this.initServiceGraphCollapse();
+			if (this.graph_open) {
+				this.initServiceGraph();
+			}
+			else {
+				$('.service-graph-canvas').removeData('graph').removeAttr('data-graph');
+			}
+			if (response.last_refreshed) {
+				$('.last-refreshed').text(<?= json_encode(_('Last refreshed: '), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?> + response.last_refreshed);
+			}
 
 			if ('groupids' in response) {
 				this.applied_filter_groupids = response.groupids;
@@ -268,72 +288,46 @@
 			}
 
 			if (this.deferred) {
-				this.deferred.abort();
+				const previous = this.deferred;
+				this.deferred = null;
+				previous.abort();
 			}
 		},
 
-		// Update expanded services in refresh URL and cookie.
+		initTreeEvents() {
+			this.host_view_form.on('click', '.js-toggle', (event) => {
+				event.preventDefault();
+				const $toggle = $(event.currentTarget);
+				this.serviceToFromRefreshUrl(String($toggle.attr('data-serviceid')),
+					$toggle.attr('aria-expanded') === 'true');
+				this.refresh();
+			}).on('click', '.js-expand-all', (event) => {
+				event.preventDefault();
+				this.setExpandedServices(this.expandable_serviceids);
+				this.refresh();
+			}).on('click', '.js-collapse-all', (event) => {
+				event.preventDefault();
+				this.setExpandedServices([]);
+				this.refresh();
+			});
+		},
+
 		serviceToFromRefreshUrl(serviceid, collapsed) {
-			this.refresh_url.unsetArgument('expanded_services');
-			const regex = /\&expanded_services=([\d,]+)/g;
-			const found = this.refresh_simple_url.match(regex);
-			let updated_ids = [];
-			if (found !== null) {
-				// There is at least one service in expanded_services in URL
-				this.refresh_simple_url = this.refresh_simple_url.replace(found[0], ''); // Remove expanded_services from URL
-				service_ids = found[0].split('=')[1].split(',');
-				idx = service_ids.indexOf(serviceid);
-				updated_ids = service_ids.slice(0);
-				if (idx == -1) {
-					// This service does not exist in expanded_services=
-					if (!collapsed){
-						updated_ids.push(serviceid);
-						this.refresh_simple_url += '&expanded_services=' + updated_ids.join(',');
-					} else {
-						this.refresh_simple_url += '&expanded_services=' + updated_ids.join(',');
-					}
-				} else {
-					// This service exists in expanded_services=
-					if (collapsed) {
-						// It's collapsed so remove it from expanded_services=
-						updated_ids.splice(idx, 1);
-						if (updated_ids.length > 0) {
-							this.refresh_simple_url += '&expanded_services=' + updated_ids.join(',');
-						}
-					}
-				}
-			} else {
-				// There is no expanded_services in URL yet
-				if (!collapsed) {
-					updated_ids = [serviceid];
-					this.refresh_simple_url += '&expanded_services=' + updated_ids.join(',');
-				}
-			}
-
-			this.setCookie('treeservice_expanded', updated_ids.join(','), 7);
-
+			const ids = new Set(this.expanded_services);
 			if (collapsed) {
-				this.refresh_url.unsetArgument('page');
-
+				ids.delete(serviceid);
 			}
+			else {
+				ids.add(serviceid);
+			}
+			this.setExpandedServices([...ids]);
 		},
 
-		// Set expanded services list and persist to cookie.
 		setExpandedServices(serviceIds) {
+			this.expanded_services = [...new Set(serviceIds.map(String).filter(id => /^\d+$/.test(id)))];
 			this.refresh_url.unsetArgument('expanded_services');
-			const regex = /\&expanded_services=([\d,]+)/g;
-			const found = this.refresh_simple_url.match(regex);
-			if (found !== null) {
-				this.refresh_simple_url = this.refresh_simple_url.replace(found[0], '');
-			}
-
-			if (serviceIds && serviceIds.length) {
-				this.refresh_simple_url += '&expanded_services=' + serviceIds.join(',');
-			}
-
-			this.setCookie('treeservice_expanded', serviceIds.join(','), 7);
-
 			this.refresh_url.unsetArgument('page');
+			this.setCookie('treeservice_expanded', this.expanded_services.join(','), 7);
 		},
 
 		// Handle filter collapse/expand toggle.
@@ -354,32 +348,24 @@
 			const params = this.refresh_url.getArgumentsObject();
 			const exclude = ['action', 'filter_src', 'filter_show_counter', 'filter_custom_time', 'filter_name'];
 			const post_data = Object.keys(params)
-				.filter(key => !exclude.includes(key))
+				.filter(key => !exclude.includes(key) && params[key] !== null && params[key] !== undefined)
 				.reduce((data, key) => {
-					data[key] = (typeof params[key] === 'object')
-						? [...params[key]].filter(i => i)
+					data[key] = Array.isArray(params[key])
+						? params[key].filter(i => i !== '' && i !== null)
 						: params[key];
 					return data;
 				}, {});
 
-			const expanded = this.getExpandedServicesFromRefreshUrl();
-			if (expanded) {
-				post_data.expanded_services = expanded;
-			}
+			post_data.expanded_services = this.expanded_services.join(',');
+			post_data.cols = Array.isArray(params.cols) && params.cols.length ? params.cols : [''];
+			post_data.graph_open = this.graph_open ? 1 : 0;
 			post_data.graph_root_causes = 0;
 
 			return post_data;
 		},
 
-		// Extract expanded service IDs from refresh URL.
-		getExpandedServicesFromRefreshUrl() {
-			const match = this.refresh_simple_url.match(/[?&]expanded_services=([\d,]+)/);
-			return match ? match[1] : '';
-		},
-
 		getExpandedServiceIds() {
-			const expanded = this.getExpandedServicesFromRefreshUrl();
-			return expanded ? expanded.split(',').filter(Boolean) : [];
+			return this.expanded_services.slice();
 		},
 
 		// Bind CSV export button.
@@ -407,13 +393,16 @@
 				if (!$(this).is(':visible')) {
 					return;
 				}
-				const key = $(this).data('col') || $(this).text().trim().toLowerCase();
+				const key = $(this).data('col') || (keys.length === 0 ? 'name' : 'status');
 				keys.push(key);
 				header.push($(this).text().trim());
 			});
 			rows.push(header);
 			$table.find('tbody tr').each(function() {
 				const $row = $(this);
+				if (!$row.is(':visible')) {
+					return;
+				}
 				const row = [];
 				let colIndex = 0;
 				$row.find('td').each(function() {
@@ -457,7 +446,7 @@
 		// Escape values for CSV output.
 		csvEscape(value) {
 			const stringValue = String(value ?? '');
-			if (/[",\n]/.test(stringValue)) {
+			if (/[",\r\n]/.test(stringValue)) {
 				return '"' + stringValue.replace(/"/g, '""') + '"';
 			}
 			return stringValue;
@@ -471,11 +460,18 @@
 			}
 
 			$filter.on('change', 'input[name="cols[]"]', () => {
+				const cols = this.getSelectedColumns();
+				this.refresh_url.setArgument('cols', cols.length ? cols : ['']);
 				this.applyColumnVisibilityFromForm();
+				clearTimeout(this.filter_refresh_timer);
+				this.filter_refresh_timer = setTimeout(() => this.refresh(), 180);
 			});
 
 			$filter.on('submit', () => {
 				this.storeFilterSelection();
+				$filter.find('input[name="expanded_services"]').remove();
+				$('<input>').attr({type: 'hidden', name: 'expanded_services'})
+					.val(this.expanded_services.join(',')).appendTo($filter);
 			});
 
 			$filter.on('click', '#filter_reset', () => {
@@ -509,8 +505,8 @@
 				return false;
 			}
 			const params = new URLSearchParams(window.location.search);
-			const has_filter = params.has('cols[]') || params.has('status[]')
-				|| params.has('only_problems') || params.has('show_path');
+			const has_filter = [...params.keys()].some(key => /^(cols|status)(\[.*\])?$/.test(key))
+				|| ['name', 'only_problems', 'show_path', 'only_with_sla', 'filter_set'].some(key => params.has(key));
 			if (has_filter) {
 				return false;
 			}
@@ -523,7 +519,7 @@
 				return false;
 			}
 			if (cols) {
-				this.setColumnCheckboxes(cols.split(',').filter(Boolean));
+				this.setColumnCheckboxes(cols === 'none' ? [] : cols.split(',').filter(Boolean));
 			}
 			if (status) {
 				this.setStatusCheckboxes(status.split(',').filter(Boolean));
@@ -537,8 +533,13 @@
 			if (onlyWithSla === '1') {
 				$filter.find('input[name="only_with_sla"]').prop('checked', true);
 			}
-			$filter.trigger('submit');
-			return true;
+			const selected = this.getSelectedColumns();
+			this.refresh_url.setArgument('cols', selected.length ? selected : ['']);
+			this.refresh_url.setArgument('status', this.getSelectedStatuses());
+			['only_problems', 'show_path', 'only_with_sla'].forEach(name => {
+				this.refresh_url.setArgument(name, $filter.find('input[name="' + name + '"]').is(':checked') ? 1 : 0);
+			});
+			return false;
 		},
 
 		// Persist filter selections in cookies for next visit.
@@ -548,7 +549,7 @@
 			const onlyProblems = $('form[name="filter"] input[name="only_problems"]').is(':checked') ? '1' : '';
 			const showPath = $('form[name="filter"] input[name="show_path"]').is(':checked') ? '1' : '';
 			const onlyWithSla = $('form[name="filter"] input[name="only_with_sla"]').is(':checked') ? '1' : '';
-			this.setCookie('treeservice_filter_cols', cols.join(','), 30);
+			this.setCookie('treeservice_filter_cols', cols.length ? cols.join(',') : 'none', 30);
 			this.setCookie('treeservice_filter_status', statuses.join(','), 30);
 			this.setCookie('treeservice_filter_only_problems', onlyProblems, 30);
 			this.setCookie('treeservice_filter_show_path', showPath, 30);
@@ -556,6 +557,9 @@
 		},
 
 		getSelectedColumns() {
+			if (!$('form[name="filter"]').length) {
+				return this.refresh_url.getArgumentsObject().cols || [];
+			}
 			const cols = [];
 			$('form[name="filter"] input[name="cols[]"]:checked').each(function() {
 				cols.push($(this).val());
@@ -596,7 +600,21 @@
 			});
 		},
 
+		destroyServiceGraph() {
+			clearTimeout(this.graph_search_timer);
+			this.graph_search_timer = null;
+			if (this.service_graph) {
+				this.graph_state = this.service_graph.getState();
+				this.service_graph.destroy();
+				this.service_graph = null;
+			}
+			$('.service-graph-canvas').empty().removeData('graph').removeAttr('data-graph');
+		},
+
 		initServiceGraph() {
+			if (!this.graph_open) {
+				return;
+			}
 			const $canvas = $('.service-graph-canvas');
 			if (!$canvas.length) {
 				return;
@@ -610,7 +628,7 @@
 				return;
 			}
 
-			if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) {
+			if (!graph || !Array.isArray(graph.nodes)) {
 				return;
 			}
 
@@ -620,7 +638,6 @@
 			}
 
 			this.service_graph = this.createServiceGraph(svg, $canvas, graph);
-			this.initServiceGraphCollapse();
 			this.service_graph.render();
 			this.service_graph.fit();
 
@@ -663,29 +680,27 @@
 		initServiceGraphCollapse() {
 			const $panel = $('.service-graph-panel');
 			const $toggle = $('.js-service-graph-toggle');
-			if (!$panel.length || !$toggle.length) {
-				return;
-			}
-
 			const setCollapsed = (collapsed) => {
 				$panel.toggleClass('is-collapsed', collapsed);
 				$toggle.attr('aria-expanded', collapsed ? 'false' : 'true');
 				$toggle.find('.arrow-down, .arrow-right')
-					.toggleClass('arrow-down', !collapsed)
-					.toggleClass('arrow-right', collapsed);
-				this.setCookie('treeservice_graph_collapsed', collapsed ? '1' : '', 30);
+					.toggleClass('arrow-down', !collapsed).toggleClass('arrow-right', collapsed);
 			};
-
-			setCollapsed(this.getCookie('treeservice_graph_collapsed') === '1');
+			setCollapsed(!this.graph_open);
 			$toggle.off('click.service_graph_collapse').on('click.service_graph_collapse', (event) => {
 				event.preventDefault();
-				const wasCollapsed = $panel.hasClass('is-collapsed');
-				setCollapsed(!$panel.hasClass('is-collapsed'));
-				if (!$panel.hasClass('is-collapsed') && this.service_graph) {
-					this.service_graph.fit();
-				}
-				if (wasCollapsed) {
+				this.graph_open = !this.graph_open;
+				setCollapsed(!this.graph_open);
+				if (this.graph_open) {
 					this.refresh();
+				}
+				else {
+					this.destroyServiceGraph();
+					// A pending table refresh may finish; onDataDone uses graph_open before rendering.
+					// Keeping it avoids losing a branch expansion when the graph is closed mid-refresh.
+					if (!this.deferred) {
+						this.scheduleRefresh();
+					}
 				}
 			});
 		},
@@ -693,12 +708,9 @@
 		createServiceGraph(svg, $canvas, graph) {
 			const namespace = 'http://www.w3.org/2000/svg';
 			const nodes = new Map(graph.nodes.map(node => [String(node.id), node]));
-			nodes.forEach((node, serviceid) => {
-				if (this.root_cause_cache[serviceid]) {
-					node.root_causes = this.root_cause_cache[serviceid];
-					node.root_causes_loaded = true;
-				}
-			});
+			const requests = new Map();
+			const listenerController = new AbortController();
+			let disposed = false;
 			const children = new Map();
 			const parents = new Map();
 			graph.edges.forEach(edge => {
@@ -731,7 +743,7 @@
 			};
 			$('.js-service-graph-search').val(state.search);
 			graph.nodes.forEach(node => {
-				if (node.is_collapsed && (children.get(String(node.id)) || []).length) {
+				if (node.is_collapsed && node.has_children) {
 					state.collapsed.add(String(node.id));
 				}
 			});
@@ -742,71 +754,64 @@
 				return element;
 			};
 
-			const collectAncestors = (id, targetSet) => {
-				(parents.get(id) || []).forEach(parentId => {
-					if (!targetSet.has(parentId)) {
-						targetSet.add(parentId);
-						collectAncestors(parentId, targetSet);
-					}
-				});
-			};
-
-			const collectDescendants = (id, targetSet) => {
-				(children.get(id) || []).forEach(childId => {
-					if (!targetSet.has(childId)) {
-						targetSet.add(childId);
-						collectDescendants(childId, targetSet);
-					}
-				});
+			const collectRelated = (ids, targetSet, relations) => {
+				const queue = [...ids];
+				const seen = new Set(ids);
+				for (let i = 0; i < queue.length; i++) {
+					(relations.get(queue[i]) || []).forEach(related => {
+						if (!seen.has(related)) {
+							seen.add(related);
+							targetSet.add(related);
+							queue.push(related);
+						}
+					});
+				}
 			};
 
 			const getFocusIds = () => {
 				const focused = new Set();
 				const search = state.search.trim().toLowerCase();
-				if (search) {
-					nodes.forEach((node, id) => {
-						if (String(node.name || '').toLowerCase().includes(search)) {
-							focused.add(id);
-							collectAncestors(id, focused);
-							collectDescendants(id, focused);
-						}
-					});
+				if (!search && !state.problemsOnly) {
+					return focused;
 				}
-
-				if (state.problemsOnly) {
-					nodes.forEach((node, id) => {
-						if (Number(node.status) !== -1) {
-							focused.add(id);
-							collectAncestors(id, focused);
-						}
-					});
+				nodes.forEach((node, id) => {
+					if ((!search || String(node.name || '').toLowerCase().includes(search))
+							&& (!state.problemsOnly || Number(node.status) !== -1)) {
+						focused.add(id);
+					}
+				});
+				const matches = [...focused];
+				collectRelated(matches, focused, parents);
+				if (search && !state.problemsOnly) {
+					collectRelated(matches, focused, children);
 				}
-
 				return focused;
 			};
 
 			const getVisibleIds = () => {
 				const visible = new Set();
 				const focusIds = getFocusIds();
-				const hasFocus = focusIds.size > 0;
+				const hasFocus = Boolean(state.search.trim()) || state.problemsOnly;
 				const roots = (graph.root_services || []).filter(id => nodes.has(String(id)));
 				const queue = roots.length ? roots.map(String) : [...nodes.keys()].filter(id => !parents.has(id));
-				const visit = (id) => {
+				for (let i = 0; i < queue.length; i++) {
+					const id = queue[i];
 					if (visible.has(id) || !nodes.has(id) || (hasFocus && !focusIds.has(id))) {
-						return;
+						continue;
 					}
 					visible.add(id);
-					if (!hasFocus && state.collapsed.has(id)) {
-						return;
+					if (hasFocus || !state.collapsed.has(id)) {
+						(children.get(id) || []).forEach(childId => queue.push(childId));
 					}
-					(children.get(id) || []).forEach(visit);
-				};
-				queue.forEach(visit);
+				}
 				return visible;
 			};
 
 			const layout = () => {
 				const visible = getVisibleIds();
+				if (visible.size > 500) {
+					return {visible, positions: new Map(), tooLarge: true};
+				}
 				const depth = new Map();
 				const roots = (graph.root_services || []).filter(id => visible.has(String(id))).map(String);
 				let queue = roots.length ? roots : [...visible].filter(id => !parents.has(id));
@@ -924,20 +929,30 @@
 			const updateDetails = (node) => {
 				const $details = $canvas.find('.service-graph-details');
 				if (!node) {
-					$details.text('<?= _('No service selected') ?>');
+					$details.text(<?= json_encode(_('No service selected'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>);
+					return;
+				}
+				if (node.root_causes_error) {
+					$details.empty().append($('<strong>').text(node.name))
+						.append($('<span>').text(<?= json_encode(_('Cannot load root causes.'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>))
+						.append($('<button>').attr('type', 'button').addClass('btn-alt')
+							.text(<?= json_encode(_('Retry'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>).on('click', () => {
+								node.root_causes_error = false;
+								updateDetails(node);
+							}));
 					return;
 				}
 				if (Number(node.status) !== -1 && !node.root_causes_loaded) {
 					$details.empty()
 						.append($('<strong>').text(node.name))
-						.append($('<span>').addClass('service-graph-empty').text('<?= _('Loading') ?>' + '...'));
+						.append($('<span>').addClass('service-graph-empty').text(<?= json_encode(_('Loading'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?> + '...'));
 					loadRootCauses(node);
 					return;
 				}
-				const hasChildren = (children.get(String(node.id)) || []).length > 0;
+				const hasChildren = node.has_children;
 				const branchLabel = state.collapsed.has(String(node.id))
-					? '<?= _('Show branch') ?>'
-					: '<?= _('Hide branch') ?>';
+					? <?= json_encode(_('Show branch'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>
+					: <?= json_encode(_('Hide branch'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
 				$details.empty()
 					.append($('<strong>').text(node.name))
 					.append($('<span>').addClass(node.status_class).addClass('service-graph-status-label').text(node.status_text))
@@ -946,13 +961,13 @@
 						.attr('href', node.url)
 						.attr('target', '_blank')
 						.attr('rel', 'noopener noreferrer')
-						.text('<?= _('Open service') ?>'));
+						.text(<?= json_encode(_('Open service'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>));
 
 				const rootCauses = Array.isArray(node.root_causes) ? node.root_causes : [];
 				const $rootCauseWrap = $('<div>').addClass('service-graph-root-causes');
 				$rootCauseWrap.append(
 					$('<div>').addClass('service-graph-root-cause-header')
-						.append($('<span>').addClass('service-graph-root-cause-title').text('<?= _('Root cause') ?>'))
+						.append($('<span>').addClass('service-graph-root-cause-title').text(<?= json_encode(_('Root cause'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>))
 				);
 				if (rootCauses.length) {
 					const rootCauseLimit = 5;
@@ -981,8 +996,8 @@
 								.attr('type', 'button')
 								.addClass('btn-alt service-graph-root-cause-more')
 								.text(isExpanded
-									? '<?= _('Show less') ?>'
-									: '<?= _('Load more') ?>' + ' (' + hiddenCount + ')')
+									? <?= json_encode(_('Show less'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>
+									: <?= json_encode(_('Load more'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?> + ' (' + hiddenCount + ')')
 								.on('click', () => {
 									const nodeId = String(node.id);
 									if (state.rootCauseExpanded.has(nodeId)) {
@@ -997,7 +1012,7 @@
 					}
 				}
 				else {
-					$rootCauseWrap.append($('<span>').addClass('service-graph-empty').text('<?= _('None') ?>'));
+					$rootCauseWrap.append($('<span>').addClass('service-graph-empty').text(<?= json_encode(_('None'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>));
 				}
 				$details.append($rootCauseWrap);
 
@@ -1014,41 +1029,41 @@
 
 			const loadRootCauses = (node) => {
 				const serviceid = String(node.id);
-				if (this.root_cause_cache[serviceid]) {
-					node.root_causes = this.root_cause_cache[serviceid];
-					node.root_causes_loaded = true;
-					updateDetails(node);
-					render();
+				if (disposed || requests.has(serviceid)) {
 					return;
 				}
-
 				const url = new Curl('zabbix.php', false);
 				url.setArgument('action', 'treeservice.rootcauses');
-				$.ajax({
-					url: url.getUrl(),
-					data: {serviceid},
-					type: 'post',
-					dataType: 'json'
-				}).done((response) => {
-					const rootCauses = Array.isArray(response.root_causes) ? response.root_causes : [];
-					this.root_cause_cache[serviceid] = rootCauses;
-					node.root_causes = rootCauses;
-					node.root_causes_loaded = true;
-					if (state.selected === serviceid) {
-						updateDetails(node);
-					}
-					render();
-				}).fail(() => {
-					node.root_causes_loaded = true;
-					node.root_causes = [];
-					if (state.selected === serviceid) {
-						updateDetails(node);
-					}
+				const request = $.ajax({
+					url: url.getUrl(), data: {serviceid}, type: 'post', dataType: 'json'
 				});
+				requests.set(serviceid, request);
+				request.done((response) => {
+					if (disposed) {
+						return;
+					}
+					if (!Array.isArray(response.root_causes)) {
+						node.root_causes_error = true;
+					}
+					else {
+						node.root_causes = response.root_causes;
+						node.root_causes_loaded = true;
+					}
+					if (state.selected === serviceid) {
+						render();
+					}
+				}).fail(() => {
+					if (!disposed) {
+						node.root_causes_error = true;
+						if (state.selected === serviceid) {
+							updateDetails(node);
+						}
+					}
+				}).always(() => requests.delete(serviceid));
 			};
 
 			const toggleBranch = (id) => {
-				if (!(children.get(id) || []).length) {
+				if (!nodes.get(id)?.has_children) {
 					return;
 				}
 				const expanded = new Set(this.getExpandedServiceIds());
@@ -1066,6 +1081,9 @@
 			};
 
 			const render = () => {
+				if (disposed) {
+					return;
+				}
 				svg.innerHTML = '';
 				const viewport = makeSvg('g', {'class': 'service-graph-viewport'});
 				const edgeLayer = makeSvg('g', {'class': 'service-graph-edges'});
@@ -1074,10 +1092,10 @@
 				viewport.appendChild(nodeLayer);
 				svg.appendChild(viewport);
 
-				const {visible, positions} = layout();
-				if (positions.size > 500 && !state.search && !state.problemsOnly) {
+				const {visible, positions, tooLarge} = layout();
+				if (tooLarge) {
 					const notice = makeSvg('text', {x: 24, y: 32, 'class': 'service-graph-large-notice'});
-					notice.textContent = '<?= _('Too many services to render. Use search or Problems only.') ?>';
+					notice.textContent = <?= json_encode(_('Too many services to render. Use search or Problems only.'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
 					nodeLayer.appendChild(notice);
 					applyTransform(viewport);
 					return;
@@ -1108,7 +1126,7 @@
 					group.lastChild.textContent = node.name.length > 24 ? node.name.substring(0, 21) + '...' : node.name;
 					group.appendChild(makeSvg('text', {x: 14, y: 39, 'class': 'service-graph-node-meta'}));
 					group.lastChild.textContent = node.status_text + ' | SLA ' + node.sla;
-					if ((children.get(id) || []).length) {
+					if (node.has_children) {
 						const marker = makeSvg('text', {x: 172, y: 30, 'class': 'service-graph-node-toggle'});
 						marker.textContent = state.collapsed.has(id) ? '+' : '-';
 						group.appendChild(marker);
@@ -1163,6 +1181,14 @@
 
 			const graphApi = {
 				render,
+				destroy: () => {
+					disposed = true;
+					clearTimeout(state.clickTimer);
+					listenerController.abort();
+					requests.forEach(request => request.abort());
+					requests.clear();
+					svg.innerHTML = '';
+				},
 				setSearch: (value) => {
 					state.search = String(value || '');
 					render();
@@ -1210,7 +1236,6 @@
 					}
 				},
 				resetCollapsed: () => {
-					state.collapsed.clear();
 					state.selected = null;
 					state.search = '';
 					state.problemsOnly = false;
@@ -1220,6 +1245,7 @@
 					state.x = 24;
 					state.y = 24;
 					render();
+					graphApi.fit();
 				},
 				getState: () => {
 					return {
@@ -1239,7 +1265,7 @@
 				state.dragging = true;
 				state.lastPointer = {x: event.clientX, y: event.clientY};
 				svg.setPointerCapture(event.pointerId);
-			});
+			}, {signal: listenerController.signal});
 			svg.addEventListener('pointermove', (event) => {
 				if (!state.dragging || !state.lastPointer) {
 					return;
@@ -1248,22 +1274,22 @@
 				state.y += event.clientY - state.lastPointer.y;
 				state.lastPointer = {x: event.clientX, y: event.clientY};
 				applyTransform(svg.querySelector('.service-graph-viewport'));
-			});
+			}, {signal: listenerController.signal});
 			svg.addEventListener('pointerup', () => {
 				state.dragging = false;
 				state.lastPointer = null;
-			});
+			}, {signal: listenerController.signal});
 			svg.addEventListener('pointercancel', () => {
 				state.dragging = false;
 				state.lastPointer = null;
-			});
+			}, {signal: listenerController.signal});
 			svg.addEventListener('wheel', (event) => {
 				if (!event.ctrlKey) {
 					return;
 				}
 				event.preventDefault();
 				graphApi.zoom(event.deltaY < 0 ? 1.08 : 0.92);
-			}, {passive: false});
+			}, {passive: false, signal: listenerController.signal});
 
 			return graphApi;
 		},
@@ -1295,7 +1321,12 @@
 			for (let i = 0; i < parts.length; i++) {
 				let part = parts[i].trim();
 				if (part.indexOf(name_eq) === 0) {
-					return decodeURIComponent(part.substring(name_eq.length, part.length));
+					try {
+						return decodeURIComponent(part.substring(name_eq.length));
+					}
+					catch (error) {
+						return '';
+					}
 				}
 			}
 			return '';

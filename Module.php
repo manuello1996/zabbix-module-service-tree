@@ -3,18 +3,20 @@
 namespace Modules\ModTreeService;
  
 use APP;
-use CControllerHost;
-use CControllerProblem;
-use CControllerLatest;
 use Modules\ModTreeService\Actions\CControllerTreeService;
 use CControllerTabFilterProfileUpdate;
 use CController as CAction;
+use CRoleHelper;
+use CWebUser;
  
 class Module extends \Zabbix\Core\CModule {
 	/**
 	 * Initialize module.
 	 */
 	public function init(): void {
+		if (!CWebUser::checkAccess(CRoleHelper::UI_SERVICES_SERVICES)) {
+			return;
+		}
 		// Initialize main menu (CMenu class instance).
 		APP::Component()->get('menu.main')
 			->findOrAdd(_('Services'))
@@ -30,12 +32,8 @@ class Module extends \Zabbix\Core\CModule {
 	 * @param CAction $action  Action instance responsible for current request.
 	 */
 	public function onBeforeAction(CAction $action): void {
-		CControllerTabFilterProfileUpdate::$namespaces = [
-                CControllerHost::FILTER_IDX => CControllerHost::FILTER_FIELDS_DEFAULT,
-				CControllerTreeService::FILTER_IDX => CControllerTreeService::FILTER_FIELDS_DEFAULT,
-				CControllerProblem::FILTER_IDX => CControllerProblem::FILTER_FIELDS_DEFAULT,
-                CControllerLatest::FILTER_IDX => CControllerLatest::FILTER_FIELDS_DEFAULT
-        ];
+		CControllerTabFilterProfileUpdate::$namespaces[CControllerTreeService::FILTER_IDX]
+			= CControllerTreeService::FILTER_FIELDS_DEFAULT;
 	}
  
 	/**

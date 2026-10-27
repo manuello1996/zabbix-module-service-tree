@@ -20,10 +20,11 @@
 
 if (!function_exists('addServiceRow')) {
 	function addServiceRow(array $data, array &$rows, string $serviceid, int $level, bool $parent_collapsed,
-			string $current_parent_id): void {
-		if (!array_key_exists($serviceid, $data['services'])) {
+			string $current_parent_id, array &$rendered): void {
+		if ($parent_collapsed || isset($rendered[$serviceid]) || !array_key_exists($serviceid, $data['services'])) {
 			return;
 		}
+		$rendered[$serviceid] = true;
 
 		$service = $data['services'][$serviceid];
 		$is_collapsed = $service['is_collapsed'];
@@ -36,16 +37,12 @@ if (!function_exists('addServiceRow')) {
 				->addItem(
 					(new CSpan())->addClass($service['is_collapsed'] ? ZBX_STYLE_ARROW_RIGHT : ZBX_STYLE_ARROW_DOWN)
 				);
-			$toggle_tag->setAttribute(
-				'data-service_id_'.$service['serviceid'],
-				$service['serviceid']
-			);
+			$toggle_tag->setAttribute('data-serviceid', $service['serviceid']);
+			$toggle_tag->setAttribute('aria-expanded', $is_collapsed ? 'false' : 'true');
+			$toggle_tag->setAttribute('aria-label', $service['name']);
 		}
 
-		$name_col = new CCol();
-		for ($i = 0; $i < $level * 5; $i++) {
-			$name_col->addItem(NBSP_BG());
-		}
+		$name_col = (new CCol())->addStyle('padding-left: '.(10 + $level * 18).'px;');
 		if ($toggle_tag !== null) {
 			$name_col->addItem($toggle_tag);
 		}
@@ -200,15 +197,13 @@ if (!function_exists('addServiceRow')) {
 			->setAttribute('data-name-path', $breadcrumb_text)
 			->setAttribute('data-root-causes', $root_cause_export);
 
-		if ($parent_collapsed) {
-			$table_row->addClass(ZBX_STYLE_DISPLAY_NONE);
-		}
-
 		addParentServiceClass($data, $table_row, $current_parent_id);
 		$rows[] = $table_row;
 
-		foreach ($service['children'] as $child_serviceid) {
-			addServiceRow($data, $rows, $child_serviceid, $level + 1, $parent_collapsed || $is_collapsed, $serviceid);
+		if (!$is_collapsed) {
+			foreach ($service['children'] as $child_serviceid) {
+				addServiceRow($data, $rows, (string) $child_serviceid, $level + 1, false, $serviceid, $rendered);
+			}
 		}
 	}
 }
@@ -266,8 +261,9 @@ if (!function_exists('makeServiceGraphData')) {
 		$nodes = [];
 		$edges = [];
 		$root_causes_loaded = array_fill_keys(array_map('strval', $data['root_causes_loaded_serviceids'] ?? []), true);
+		$visible = array_fill_keys($data['visible_serviceids'], true);
 
-		foreach ($data['services'] as $serviceid => $service) {
+		foreach (array_intersect_key($data['services'], $visible) as $serviceid => $service) {
 			$status_value = array_key_exists('status_calc', $service) ? $service['status_calc'] : $service['status'];
 			$status_meta = getServiceStatusMeta($status_value);
 			$service_url = (new CUrl('zabbix.php'))
@@ -317,14 +313,16 @@ if (!function_exists('makeServiceGraphData')) {
 				'sla' => $service['sla']['sli'] !== null ? number_format((float) $service['sla']['sli'], 2, '.', '').'%' : '-',
 				'slo' => $service['sla']['slo'] !== null ? $service['sla']['slo'].'%' : '-',
 				'is_collapsed' => (bool)($service['is_collapsed'] ?? false),
-				'children' => array_values(array_map('strval', $service['children'] ?? [])),
-				'parents' => array_values(array_map('strval', $service['parent_serviceids'] ?? [])),
+				'has_children' => (bool) $service['children'],
 				'root_causes' => $root_causes,
 				'root_causes_loaded' => array_key_exists((string) $serviceid, $root_causes_loaded),
 				'url' => $service_url->getUrl()
 			];
 
 			foreach ($service['children'] ?? [] as $child_serviceid) {
+				if (!isset($visible[$child_serviceid])) {
+					continue;
+				}
 				$edge_key = $serviceid.'-'.$child_serviceid;
 				$edges[$edge_key] = [
 					'from' => (string) $serviceid,

@@ -18,7 +18,6 @@
 ** Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 **/
 
-$this->includeJsFile('monitoring.host.view.refresh.js.php');
 require_once __DIR__.'/module.services.tree.view.helpers.php';
 
 $form = (new CForm())->setName('host_view');
@@ -96,9 +95,10 @@ $table->setHeader([
 ]);
 
 // Render tree rows.
+$rendered = [];
 foreach ($data['root_services'] as $serviceid) {
 	$rows = [];
-	addServiceRow($data, $rows, $serviceid, 0, false, '0');
+	addServiceRow($data, $rows, (string) $serviceid, 0, false, '0', $rendered);
 	foreach ($rows as $row) {
 		$table->addRow($row);
 	}
@@ -113,9 +113,9 @@ $expand_all = (new CButton('expand_all', _('Expand all')))
 $collapse_all = (new CButton('collapse_all', _('Collapse all')))
 	->addClass(ZBX_STYLE_BTN_ALT)
 	->addClass('js-collapse-all');
-$form->addItem((new CDiv([$expand_all, $collapse_all]))->addClass('tree-actions'));
+$form->addItem((new CDiv([clone $expand_all, clone $collapse_all]))->addClass('tree-actions'));
 
-$graph_data = makeServiceGraphData($data);
+$graph_open = !empty($data['filter']['graph_open']);
 $graph_fit = (new CButton('graph_fit', _('Fit')))
 	->addClass(ZBX_STYLE_BTN_ALT)
 	->addClass('js-service-graph-fit');
@@ -141,18 +141,28 @@ $graph_zoom_out = (new CSimpleButton('-'))
 $graph_reset = (new CButton('graph_reset', _('Reset')))
 	->addClass(ZBX_STYLE_BTN_ALT)
 	->addClass('js-service-graph-reset');
+$graph_canvas = (new CDiv())->addClass('service-graph-canvas');
+if ($graph_open) {
+	$graph_canvas
+		->addItem((new CTag('svg', true, ''))
+			->addClass('service-graph-svg')
+			->setAttribute('role', 'img')
+			->setAttribute('aria-label', _('Services tree graph')))
+		->addItem((new CDiv(_('No service selected')))->addClass('service-graph-details'))
+		->setAttribute('data-graph', json_encode(makeServiceGraphData($data)));
+}
 $graph_panel = (new CDiv([
 	(new CDiv([
 		(new CLink([
-			(new CSpan())->addClass(ZBX_STYLE_ARROW_DOWN),
+			(new CSpan())->addClass($graph_open ? ZBX_STYLE_ARROW_DOWN : ZBX_STYLE_ARROW_RIGHT),
 			(new CSpan(_('Graph view')))->addClass('service-graph-title')
 		], '#'))
 			->addClass('service-graph-toggle')
 			->addClass('js-service-graph-toggle')
-			->setAttribute('aria-expanded', 'true'),
+			->setAttribute('aria-expanded', $graph_open ? 'true' : 'false'),
 		(new CDiv([
 			(new CTextBox('graph_search', ''))
-				->setAttribute('placeholder', _('Focus service'))
+				->setAttribute('placeholder', _('Focus visible service'))
 				->addClass('js-service-graph-search')
 				->addClass('service-graph-search'),
 			$graph_problem_focus,
@@ -165,21 +175,13 @@ $graph_panel = (new CDiv([
 		]))
 			->addClass('service-graph-controls')
 	]))->addClass('service-graph-header'),
-	(new CDiv([
-		(new CTag('svg', true, ''))
-			->addClass('service-graph-svg')
-			->setAttribute('role', 'img')
-			->setAttribute('aria-label', _('Services tree graph')),
-		(new CDiv(_('No service selected')))->addClass('service-graph-details')
-	]))
-		->addClass('service-graph-canvas')
-		->setAttribute('data-graph', json_encode($graph_data))
-]))->addClass('service-graph-panel');
+	$graph_canvas
+]))->addClass('service-graph-panel')->addClass($graph_open ? '' : 'is-collapsed');
 $form->addItem($graph_panel);
 
 $form->addItem($table);
 // Paging footer with total count.
-$total_services = array_key_exists('services', $data) ? count($data['services']) : 0;
+$total_services = count($data['visible_serviceids']);
 $paging = new CDiv(
 	(new CTag('nav', true,
 		(new CDiv(_('Displaying ').$total_services.' '._('services')))->addClass('table-stats')
@@ -191,6 +193,8 @@ $paging = new CDiv(
 $paging->addClass('table-paging');
 $form->addItem($paging);
 
-$form->addItem((new CDiv([$expand_all, $collapse_all]))->addClass('tree-actions'));
+$form->addItem((new CDiv([
+	$expand_all->setId('expand_all_bottom'), $collapse_all->setId('collapse_all_bottom')
+]))->addClass('tree-actions'));
 echo $form;
 
